@@ -195,6 +195,25 @@ def test_inline_math():
     assert r'\(e^{i\pi} + 1 = 0\)' in str(list(soup.itemize.children)[1]), 'Environment incorrectly associated.'
 
 
+def test_arxiv_math_environment_names():
+    """Common arXiv math environments should parse in math mode."""
+    from TexSoup.tokens import MATH_ENV_NAMES
+    for name in (
+        'alignat*', 'aligned', 'cases', 'gathered', 'IEEEeqnarray',
+        'matrix', 'bmatrix', 'pmatrix', 'smallmatrix', 'subarray',
+    ):
+        assert name in MATH_ENV_NAMES
+
+
+def test_tolerates_item_inside_math():
+    """Tolerance mode should not hard-fail on malformed arXiv math."""
+    with pytest.raises(AssertionError):
+        TexSoup(r"$\begin{cases}\item x\end{cases}$")
+    soup = TexSoup(r"$\begin{cases}\item x\end{cases}$", tolerance=1)
+    assert soup.cases
+    assert r"\item" in str(soup.cases)
+
+
 def test_back_to_back_inline_math():
     """Tests that adjacent inline math environments do not nest incorrectly."""
     soup = TexSoup(r"""$1$$2$""")

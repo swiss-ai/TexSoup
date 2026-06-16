@@ -119,9 +119,12 @@ def read_expr(src, skip_envs=(), tolerance=0, mode=MODE_NON_MATH):
                 name, read_verbatim_contents(src, tolerance=tolerance),
                 args=args, position=c.position)
         elif name == 'item':
-            assert mode != MODE_MATH, r'Command \item invalid in math mode.'
-            contents = read_item(src)
-            expr = TexCmd(name, contents, args, position=c.position)
+            if mode == MODE_MATH and tolerance > 0:
+                expr = TexCmd(name, args=args, position=c.position)
+            else:
+                assert mode != MODE_MATH, r'Command \item invalid in math mode.'
+                contents = read_item(src, tolerance=tolerance)
+                expr = TexCmd(name, contents, args, position=c.position)
         # if we are in "special" mode, we do not attempt to match the `\begin`
         # and `\end`
         elif name == 'begin' and mode != MODE_SPECIAL:

@@ -14,9 +14,13 @@ import string
 # Custom higher-level combinations of primitives
 SKIP_ENV_NAMES = ('lstlisting', 'verbatim', 'verbatimtab', 'Verbatim', 'listing')
 MATH_ENV_NAMES = (
-    'align', 'align*', 'alignat', 'array', 'displaymath', 'eqnarray',
-    'eqnarray*', 'equation', 'equation*', 'flalign', 'flalign*', 'gather',
-    'gather*', 'math', 'multline', 'multline*', 'split'
+    'align', 'align*', 'alignat', 'alignat*', 'aligned', 'alignedat',
+    'array', 'Bmatrix', 'bmatrix', 'cases', 'CD', 'displaymath',
+    'eqnarray', 'eqnarray*', 'equation', 'equation*', 'flalign',
+    'flalign*', 'gather', 'gather*', 'gathered', 'IEEEeqnarray',
+    'IEEEeqnarray*', 'math', 'matrix', 'multline', 'multline*',
+    'pmatrix', 'psmallmatrix', 'smallmatrix', 'split', 'subarray',
+    'Vmatrix', 'vmatrix'
 )
 SPECIAL_COMMANDS = {'newcommand', 'renewcommand', 'providecommand'}
 BRACKETS_DELIMITERS = {
