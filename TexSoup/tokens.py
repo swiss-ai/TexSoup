@@ -12,10 +12,14 @@ import itertools
 import string
 
 # Custom higher-level combinations of primitives
-SKIP_ENV_NAMES = ('lstlisting', 'verbatim', 'verbatimtab', 'Verbatim', 'listing')
+SKIP_ENV_NAMES = (
+    'lstlisting', 'verbatim', 'verbatimtab', 'Verbatim', 'listing', 'alltt',
+    'minted', 'tcblisting', 'tcblisting*',
+    'AIBox', 'AIBoxNoTitle', 'AIBoxBreak',
+)
 MATH_ENV_NAMES = (
     'align', 'align*', 'alignat', 'alignat*', 'aligned', 'alignedat',
-    'array', 'Bmatrix', 'bmatrix', 'cases', 'CD', 'displaymath',
+    'array', 'BMAT', 'Bmatrix', 'bmatrix', 'cases', 'CD', 'displaymath',
     'eqnarray', 'eqnarray*', 'equation', 'equation*', 'flalign',
     'flalign*', 'gather', 'gather*', 'gathered', 'IEEEeqnarray',
     'IEEEeqnarray*', 'math', 'matrix', 'multline', 'multline*',
@@ -47,6 +51,19 @@ PUNCTUATION_COMMANDS_BY_FIRST_LETTER = {
         for delimiter in _PUNCTUATION_DELIMITERS
     )
     for first_letter, prefixes in _PUNCTUATION_PREFIXES_BY_FIRST_LETTER.items()
+}
+MATH_ASYM_SWITCH_TOKEN_CODES = {
+    (CC.Escape, CC.BracketBegin): TC.DisplayMathGroupBegin,
+    (CC.Escape, CC.BracketEnd): TC.DisplayMathGroupEnd,
+    (CC.Escape, CC.ParenBegin): TC.MathGroupBegin,
+    (CC.Escape, CC.ParenEnd): TC.MathGroupEnd,
+}
+SYMBOL_TOKEN_CODES = {
+    CC.Escape: TC.Escape,
+    CC.GroupBegin: TC.GroupBegin,
+    CC.GroupEnd: TC.GroupEnd,
+    CC.BracketBegin: TC.BracketBegin,
+    CC.BracketEnd: TC.BracketEnd,
 }
 
 __all__ = ['tokenize']
@@ -205,11 +222,13 @@ def tokenize_escaped_symbols(text, prev=None):
     >>> tokenize_escaped_symbols(categorize(r'\ '))
     '\\ '
     """
-    if text.peek().category == CC.Escape \
-            and text.peek(1) \
+    current = text.peek()
+    next_token = text.peek(1)
+    if current.category == CC.Escape \
+            and next_token \
             and not (
-                in_at_letter_mode(text) and text.peek(1) == '@') \
-            and text.peek(1).category in (
+                in_at_letter_mode(text) and next_token == '@') \
+            and next_token.category in (
                 CC.Escape, CC.GroupBegin, CC.GroupEnd, CC.MathSwitch,
                 CC.Alignment, CC.EndOfLine, CC.Macro, CC.Superscript,
                 CC.Subscript, CC.Spacer, CC.Active, CC.Comment, CC.Other):
@@ -260,8 +279,10 @@ def tokenize_math_sym_switch(text, prev=None):
     >>> tokenize_math_sym_switch(categorize(r'$$\min_x$$ \command'))
     '$$'
     """
-    if text.peek().category == CC.MathSwitch:
-        if text.peek(1) and text.peek(1).category == CC.MathSwitch:
+    current = text.peek()
+    if current.category == CC.MathSwitch:
+        next_token = text.peek(1)
+        if next_token and next_token.category == CC.MathSwitch:
             result = Token(text.forward(2), text.position)
             result.category = TC.DisplayMathSwitch
         else:
@@ -282,18 +303,13 @@ def tokenize_math_asym_switch(text, prev=None):
     '\\]'
     >>> tokenize_math_asym_switch(categorize(r'[]'))
     """
-    mapping = {
-        (CC.Escape, CC.BracketBegin):   TC.DisplayMathGroupBegin,
-        (CC.Escape, CC.BracketEnd):     TC.DisplayMathGroupEnd,
-        (CC.Escape, CC.ParenBegin):     TC.MathGroupBegin,
-        (CC.Escape, CC.ParenEnd):       TC.MathGroupEnd
-    }
     if not text.hasNext(2):
         return
     key = (text.peek().category, text.peek(1).category)
-    if key in mapping:
+    token_code = MATH_ASYM_SWITCH_TOKEN_CODES.get(key)
+    if token_code is not None:
         result = text.forward(2)
-        result.category = mapping[key]
+        result.category = token_code
         return result
 
 
@@ -305,8 +321,10 @@ def tokenize_line_break(text, prev=None):
     '\\\\'
     >>> tokenize_line_break(categorize(r'\aaa'))
     """
-    if text.peek().category == CC.Escape and text.peek(1) \
-            and text.peek(1).category == CC.Escape:
+    current = text.peek()
+    next_token = text.peek(1)
+    if current.category == CC.Escape and next_token \
+            and next_token.category == CC.Escape:
         result = text.forward(2)
         result.category = TC.LineBreak
         return result
@@ -365,16 +383,11 @@ def tokenize_symbols(text, prev=None):
     >>> next(tokenize(categorize(r'{]}'))).category
     <TokenCode.GroupBegin: 23>
     """
-    mapping = {
-        CC.Escape:          TC.Escape,
-        CC.GroupBegin:      TC.GroupBegin,
-        CC.GroupEnd:        TC.GroupEnd,
-        CC.BracketBegin:     TC.BracketBegin,
-        CC.BracketEnd:    TC.BracketEnd
-    }
-    if text.peek().category in mapping.keys():
+    current = text.peek()
+    token_code = SYMBOL_TOKEN_CODES.get(current.category)
+    if token_code is not None:
         result = text.forward(1)
-        result.category = mapping[result.category]
+        result.category = token_code
         return result
 
 
@@ -390,7 +403,8 @@ def tokenize_punctuation_command_name(text, prev=None):
     :param Buffer text: iterator over text, with current position
     """
     current = text.peek()
-    if text.peek(-1) and text.peek(-1).category == CC.Escape and current:
+    previous = text.peek(-1)
+    if previous and previous.category == CC.Escape and current:
         for point in PUNCTUATION_COMMANDS_BY_FIRST_LETTER.get(str(current), ()):
             if text.peek((0, len(point))) == point:
                 result = text.forward(len(point))
@@ -419,7 +433,8 @@ def tokenize_command_name(text, prev=None):
     'bf*'
     """
     token = text.peek()
-    if text.peek(-1) and text.peek(-1).category == CC.Escape \
+    previous = text.peek(-1)
+    if previous and previous.category == CC.Escape \
             and is_command_name_token(token, text):
         parts = [next(text)]
         token = text.peek()

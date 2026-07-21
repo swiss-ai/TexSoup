@@ -1140,6 +1140,7 @@ class TexText(TexExpr, str):
         """
         if position < 0 and hasattr(text, 'position'):
             position = text.position
+        self.category = getattr(text, 'category', None)
         text = str(text)
         super().__init__('text', [text], position=position)
         self._text = text
@@ -1390,10 +1391,9 @@ class TexArgs(list):
 
         if len(self) <= 1:
             self.all.append(arg)
+        elif i >= len(self):
+            self.all.append(arg)
         else:
-            if i > len(self):
-                i = len(self) - 1
-
             before = self[i - 1]
             index_before = self.all.index(before)
             self.all.insert(index_before + 1, arg)

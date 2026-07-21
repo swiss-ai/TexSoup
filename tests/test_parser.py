@@ -1,6 +1,7 @@
 from TexSoup import TexSoup
 from TexSoup.data import TexText
 import pytest
+import time
 
 
 ###############
@@ -199,7 +200,7 @@ def test_arxiv_math_environment_names():
     """Common arXiv math environments should parse in math mode."""
     from TexSoup.tokens import MATH_ENV_NAMES
     for name in (
-        'alignat*', 'aligned', 'cases', 'gathered', 'IEEEeqnarray',
+        'alignat*', 'aligned', 'BMAT', 'cases', 'gathered', 'IEEEeqnarray',
         'matrix', 'bmatrix', 'pmatrix', 'smallmatrix', 'subarray',
     ):
         assert name in MATH_ENV_NAMES
@@ -350,6 +351,9 @@ def test_comment_unparsed():
     """Tests that comments are not parsed."""
     soup = TexSoup(r"""\caption{30} % \caption{...""")
     assert '%' not in str(soup.caption)
+    comment = list(soup.contents)[1]
+    from TexSoup.tokens import TC
+    assert comment.category == TC.Comment
 
 
 def test_comment_after_escape():
@@ -433,11 +437,12 @@ def test_nested_commands():
 
 
 def test_def_item():
-    """Tests that def with more 'complex' argument + item body parses."""
+    """Tests that def with more 'complex' raw replacement body parses."""
     soup = TexSoup(r"""
     \def\itemeqn{\item\abovedisplayskip=2pt\abovedisplayshortskip=0pt~\vspace*{-\baselineskip}}
     """)
-    assert soup.item is not None
+    assert soup.item is None
+    assert r"\item\abovedisplayskip" in str(soup.find("def"))
 
 
 def test_def_without_braces():
@@ -523,6 +528,28 @@ def test_non_letter_commands():
         """.format(punctuation)
         soup = TexSoup(tex)
         assert str(soup) == tex
+
+
+def test_no_arg_text_symbol_before_literal_bracket():
+    """No-arg text symbols must not consume a following literal bracket."""
+    tex = (
+        r"\begin{figure}"
+        r"\captionof{table}{Cap}"
+        r"\resizebox{1\textwidth}{!}{"
+        r"\begin{tabularx}{x}{l c l}"
+        r"Instruction & Layer & Top Tokens \\"
+        r"JSON Format & 18 & \texttt{\textunderscore [\{, \textunderscore json, \textunderscore JSON } \\"
+        r"\end{tabularx}}"
+        r"\label{table:x}"
+        r"\end{figure}"
+        r"\section{After}"
+    )
+    soup = TexSoup(tex, tolerance=1)
+
+    assert r"\section{After}" not in str(soup.figure)
+    assert str(soup.figure).endswith(r"\end{figure}")
+    assert soup.section.string == "After"
+    assert not soup.find("textunderscore").args
 
 
 def test_math_environment_escape():
@@ -658,6 +685,29 @@ def test_unclosed_math_environments():
         TexSoup(r"""$\min_x \|Xw-y\|_2^2""")
 
 
+def test_tolerance_math_unclosed():
+    """Tolerance mode keeps malformed math as recoverable content."""
+    soup = TexSoup(r"""before $\min_x \|Xw-y\|_2^2 after""", tolerance=1)
+    assert r"\min_x" in str(soup)
+    assert len(list(soup.children)) == 1
+
+
+def test_tolerance_mixed_dollar_paren_math_closes_locally():
+    """A source typo like ``$...\\)`` must not swallow later document text."""
+    soup = TexSoup(
+        r"where $i\in[k]\setminus I\). After $\phi$ remains local.",
+        tolerance=1,
+    )
+    math_nodes = [
+        node for node in soup.descendants
+        if getattr(node, "name", None) == "$"
+    ]
+
+    assert len(math_nodes) == 2
+    assert all("After" not in str(node) for node in math_nodes)
+    assert "After" in str(soup)
+
+
 def test_arg_parse():
     """Test arg parsing errors."""
     from TexSoup.data import TexGroup
@@ -710,6 +760,218 @@ def test_special_command():
     assert soup
 
 
+def test_def_replacement_body_raw():
+    """Primitive macro replacement bodies should not parse nested TeX."""
+    soup = TexSoup(r"\def\foo{\begin{equation}}", tolerance=0)
+    assert str(soup.find("def")) == r"\def\foo{\begin{equation}}"
+    assert soup.find("equation") is None
+
+
+def test_def_with_parameter_text_preserves_args_and_string():
+    """Primitive macro parameter text should stay unbraced in output."""
+    source = r"\def\figref#1{figure~\ref{#1}}"
+    soup = TexSoup(source)
+    command = soup.find("def")
+    assert str(command) == source
+    assert [str(arg) for arg in command.args] == [
+        r"\figref", "#1", r"{figure~\ref{#1}}"]
+    assert command.args[1].string == "#1"
+    assert command.args[2].string == r"figure~\ref{#1}"
+
+
+def test_macro_definition_replacement_bodies_are_raw_and_fast():
+    """Representative math macro files should parse without recursive bodies."""
+    source = "\n".join(
+        r"\newcommand{\macro%d}[1]{\begin{equation}$#1\end{split}}" % i
+        for i in range(300)
+    )
+    source += "\n" + r"\DeclareMathOperator{\badop}{arg\,max$}"
+
+    start = time.perf_counter()
+    soup = TexSoup(source, tolerance=0)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 2.0
+    assert soup.count("newcommand") == 300
+    assert soup.DeclareMathOperator is not None
+    assert soup.find("equation") is None
+
+
+def test_environment_definition_bodies_are_raw():
+    source = (
+        r"\newenvironment{algenv}[2]"
+        r"{\begin{algorithm}\caption{#1}\label{#2}}"
+        r"{\end{algorithm}}"
+    )
+    soup = TexSoup(source, tolerance=0)
+    command = soup.find("newenvironment")
+    assert command is not None
+    assert str(command) == source
+    assert soup.find("algorithm") is None
+    assert soup.find("label") is None
+    assert [str(arg) for arg in command.args] == [
+        "{algenv}",
+        "[2]",
+        r"{\begin{algorithm}\caption{#1}\label{#2}}",
+        r"{\end{algorithm}}",
+    ]
+
+
+def test_document_environment_definition_bodies_are_raw():
+    source = (
+        r"\NewDocumentEnvironment{box}{m}"
+        r"{\begin{figure}\label{#1}}"
+        r"{\end{figure}}"
+    )
+    soup = TexSoup(source, tolerance=0)
+    command = soup.find("NewDocumentEnvironment")
+    assert command is not None
+    assert str(command) == source
+    assert soup.find("figure") is None
+    assert soup.find("label") is None
+
+
+def test_simple_environment_macros_expand_before_parsing():
+    r"""Common paper aliases like \be/\ee should expose real environments."""
+    soup = TexSoup(
+        r"\def\be{\begin{equation}}\def\ee{\end{equation}}"
+        r"\begin{document}Before \be x=1 \ee after\end{document}",
+        expand_macros=True,
+    )
+    assert soup.equation is not None
+    assert "x=1" in str(soup.equation)
+
+
+def test_simple_newenvironment_wrappers_expand_before_parsing():
+    r"""Simple environment wrappers should expose their target environments."""
+    soup = TexSoup(
+        r"\newenvironment{ex}{\begin{example}\rm}{\end{example}}"
+        r"\begin{document}Before \begin{ex}Body\end{ex} after\end{document}",
+        expand_macros=True,
+    )
+    assert soup.example is not None
+    assert "Body" in str(soup.example)
+    assert soup.find("ex") is None
+
+
+def test_simple_definition_command_aliases_expand_before_parsing():
+    r"""Paper aliases like \nc for \newcommand should still define macros."""
+    soup = TexSoup(
+        r"\newcommand{\nc}{\newcommand}"
+        r"\nc{\beq}{\begin{equation}}"
+        r"\nc{\eeq}{\end{equation}}"
+        r"\begin{document}Before \beq x=1 \eeq after\end{document}",
+        expand_macros=True,
+    )
+    assert soup.equation is not None
+    assert "x=1" in str(soup.equation)
+
+
+def test_simple_macro_expansion_can_be_disabled():
+    source = (
+        r"\def\be{\begin{equation}}\def\ee{\end{equation}}"
+        r"\be x=1 \ee"
+    )
+    soup = TexSoup(source, expand_macros=False)
+    assert soup.equation is None
+    assert soup.be is not None
+
+
+def test_simple_argument_macros_expand_refs_and_math_wrappers():
+    soup = TexSoup(
+        r"\newcommand{\figref}[1]{Figure~\ref{#1}}"
+        r"\newcommand{\pfrac}[2]{\left(\frac{\partial #1}{\partial #2}\right)}"
+        r"See \figref{fig:a}. $\pfrac{f}{x}$",
+        expand_macros=True,
+    )
+    assert soup.ref is not None
+    assert soup.ref.string == "fig:a"
+    assert r"\frac{\partial f}{\partial x}" in str(soup)
+
+
+def test_label_relation_macros_expand_before_parsing():
+    soup = TexSoup(
+        r"\begin{align}"
+        r"a&\labelrel={eq:a} b \\"
+        r"c&\labelrel\sleq{eq:c} d"
+        r"\end{align}",
+        expand_macros=True,
+    )
+    labels = [label.string for label in soup.find_all("label")]
+    assert labels == ["eq:a", "eq:c"]
+    assert r"\labelrel" not in str(soup)
+    assert r"\sleq" in str(soup)
+
+
+def test_simple_macro_expansion_handles_control_symbol_targets():
+    soup = TexSoup(
+        r"\renewcommand{\(}{\left(}\renewcommand{\)}{\right)}"
+        r"\begin{align}\(x+y\)\end{align}",
+        expand_macros=True,
+    )
+    assert soup.align is not None
+    assert r"\left(x+y\right)" in str(soup.align)
+
+
+def test_macro_expansion_handles_optional_defaults_and_skips_comments():
+    source = (
+        r"\newcommand{\maybe}[2][x]{#1#2}"
+        "\n% \\def\\be{\\begin{equation}}\n"
+        r"\maybe{y} \be z \ee"
+    )
+    soup = TexSoup(source, expand_macros=True)
+    assert soup.equation is None
+    assert soup.maybe is None
+    assert "xy" in str(soup)
+    assert soup.be is not None
+
+
+def test_macro_expansion_treats_percent_after_control_symbol_as_comment():
+    from TexSoup.macros import expand_macros
+
+    source = (
+        r"\def\foo{OK}" "\n"
+        r"\\% \def\foo{BAD}" "\n"
+        r"\foo"
+    )
+
+    assert expand_macros(source).endswith("OK")
+
+
+def test_macro_expansion_obeys_definition_order():
+    from TexSoup.macros import expand_macros
+
+    source = (
+        r"\foo "
+        r"\def\foo{A}\foo "
+        r"\def\foo{B}\foo "
+        r"\providecommand{\foo}{C}\foo"
+    )
+    assert expand_macros(source) == (
+        r"\foo "
+        r"\def\foo{A}A "
+        r"\def\foo{B}B "
+        r"\providecommand{\foo}{C}B"
+    )
+
+
+def test_macro_expansion_skips_verbatim_like_payloads():
+    source = (
+        r"\def\foo{BAR}"
+        r"\begin{verbatim}\foo\end{verbatim} "
+        r"\verb|\foo| "
+        r"\lstinline[language=TeX]|\foo| "
+        r"\url{\foo} "
+        r"\foo"
+    )
+    soup = TexSoup(source, expand_macros=True)
+    assert r"\foo" in str(soup.verbatim)
+    assert r"\verb|\foo|" in str(soup)
+    assert r"\lstinline[language=TeX]|\foo|" in str(soup)
+    assert r"\url{\foo}" in str(soup)
+    assert str(soup).endswith("BAR")
+
+
 def test_special_command_signatures():
     """Macro-definition commands should consume their control sequence names."""
     for source, name in (
@@ -732,6 +994,27 @@ def test_special_command_signatures():
     assert [str(arg) for arg in children[0].args] == [
         r'\a', '[2]', '[default]', '{Hello #1 #2}']
 
+    soup = TexSoup(r"\newcommand{\foo}[1]{\textbf{#1}}")
+    children = list(soup.children)
+    assert len(children) == 1
+    assert [str(arg) for arg in children[0].args] == [
+        r'{\foo}', '[1]', r'{\textbf{#1}}']
+
+    soup = TexSoup(r"\renewcommand{\(}{\left(}\renewcommand{\)}{\right)}")
+    assert [str(arg) for arg in soup.renewcommand.args] == [
+        r'{\(}', r'{\left(}']
+
+    soup = TexSoup(r"\def\({\left(}\def\){\right)}")
+    assert [str(arg) for arg in soup.find_all('def')[0].args] == [
+        r'\(', r'{\left(}']
+
+
+def test_label_supports_optional_type_argument():
+    soup = TexSoup(r"\label[definition]{def:a}", expand_macros=False)
+    label = soup.find("label")
+    assert [str(arg) for arg in label.args] == ["[definition]", "{def:a}"]
+    assert label.args[-1].string == "def:a"
+
 
 def test_makeatletter_command_names():
     """``\\makeatletter`` should allow ``@`` inside command names."""
@@ -753,6 +1036,20 @@ def test_brackets_issue():
     """Test that mismatched square brackets in math mode are not a problem."""
     soup = TexSoup(r"$\cmd [0,1)$")
     assert soup
+
+
+def test_nested_inline_math_delimiters_inside_math_mode_are_text():
+    """Some arXiv sources use ``\\(`` / ``\\)`` inside display math as
+    delimiter-like tokens. They should not open a nested math environment."""
+    soup = TexSoup(
+        r"\begin{align}"
+        r"\mathcal{V}^{a}=\mathcal{V}^{\mu}"
+        r"\(\dfrac{\partial}{\partial p^\mu}\)^{a}"
+        r"\end{align}",
+        tolerance=1,
+    )
+    assert soup.align is not None
+    assert r"\(\dfrac" in str(soup.align)
 
 
 def test_verbatim_like_commands():
@@ -780,6 +1077,117 @@ def test_verbatim_like_commands():
         r"\url{en.wikipedia.org/wiki/Zermelo%E2%80%93Fraenkel_set_theory}")
     assert str(soup.url.args[0]) == (
         r"{en.wikipedia.org/wiki/Zermelo%E2%80%93Fraenkel_set_theory}")
+
+
+def test_mintinline_keeps_code_arg_raw_without_swallowing_body():
+    """Inline minted code can contain literal dollars."""
+    soup = TexSoup(
+        r"Before \mintinline{php}{$_POST} after.",
+        tolerance=1,
+        expand_macros=False,
+    )
+    parts = list(soup.all)
+
+    assert str(soup) == r"Before \mintinline{php}{$_POST} after."
+    assert str(parts[1]) == r"\mintinline{php}{$_POST}"
+    assert [str(arg) for arg in parts[1].args] == ["{php}", r"{$_POST}"]
+    assert str(parts[2]) == " after."
+
+
+def test_listing_style_arguments_raw():
+    """listings/mdframed key-value configs may use TeX-active characters such
+    as $$ as literal delimiters; they are not math expressions."""
+    soup = TexSoup(
+        r"\lstdefinestyle{Terraform}{moredelim=[il][\color{gray}]{$$},}"
+        r"\lstset{style=Terraform, postbreak=\mbox{\textcolor{red}{$\hookrightarrow$}}}"
+        r"\mdfdefinestyle{box}{backgroundcolor=yellow!10}"
+    )
+    assert "$$" in str(soup.lstdefinestyle)
+    assert r"$\hookrightarrow$" in str(soup.lstset)
+    assert soup.mdfdefinestyle is not None
+
+
+def test_tblr_layout_argument_is_raw_table_metadata():
+    soup = TexSoup(
+        r"\begin{tblr}[]{colspec={|X[6]X[5]|}, rows={font=\tiny}}"
+        r"A & B\\"
+        r"\end{tblr}",
+        tolerance=1,
+        expand_macros=False,
+    )
+
+    assert soup.tblr is not None
+    assert [str(arg) for arg in soup.tblr.args] == [
+        "[]",
+        r"{colspec={|X[6]X[5]|}, rows={font=\tiny}}",
+    ]
+    assert "A & B" in str(soup.tblr)
+
+
+def test_custom_prompt_boxes_are_skipped_like_verbatim():
+    """Model prompt boxes often wrap listings that contain literal dollars and
+    TeX-looking text. Parse the box as raw payload rather than LaTeX."""
+    soup = TexSoup(
+        r"\begin{AIBoxNoTitle}{\begin{lstlisting}"
+        r'Model Output: ["Your bank balance is $1,234.56."]'
+        r"\end{lstlisting}}\end{AIBoxNoTitle}"
+    )
+    assert "$1,234.56" in str(soup.AIBoxNoTitle)
+
+
+def test_tcblisting_is_skipped_like_verbatim():
+    """Prompt/listing boxes contain raw prompt text and literal dollars."""
+    soup = TexSoup(
+        r"\begin{tcblisting}{colback=usercolor, listing only}"
+        r"User: return JSON with price $1.23."
+        r"\end{tcblisting}"
+        r"After.",
+        tolerance=1,
+        expand_macros=False,
+    )
+    box = soup.find("tcblisting")
+
+    assert box is not None
+    assert "$1.23" in str(box)
+    assert str(soup).endswith("After.")
+
+
+def test_minted_inside_float_does_not_swallow_following_body():
+    tex = (
+        r"\begin{wrapfigure}{R}{0.5\textwidth}"
+        "\n"
+        r"\begin{minted}[fontsize=\tiny,escapeinside=<>]{php}"
+        "\n"
+        r"$x = 1;"
+        "\n"
+        r"\end{minted}"
+        "\n"
+        r"\caption{Cap}\label{fig:x}"
+        "\n"
+        r"\end{wrapfigure}"
+        "\n"
+        "After."
+    )
+    soup = TexSoup(tex, tolerance=1, expand_macros=False)
+    wrap = soup.find("wrapfigure")
+
+    assert wrap is not None
+    assert soup.find("minted") is not None
+    assert "After." not in str(wrap)
+    assert str(soup).endswith("After.")
+    assert r"$x = 1;" in str(soup.find("minted"))
+
+
+def test_author_argument_raw():
+    """Author blocks often contain affiliation math and nested thanks macros.
+    They should not be allowed to leave the whole document in math mode."""
+    soup = TexSoup(
+        r"\author{Fan Liu$^{1}$ \thanks{$^{\dagger}$Correspondence}\\ "
+        r"$^{1}$AI Thrust}"
+        r"\begin{document}Body\end{document}"
+    )
+    assert r"$^{\dagger}$" in str(soup.author)
+    assert soup.document is not None
 
 
 def test_tabular_column_spec_raw():
