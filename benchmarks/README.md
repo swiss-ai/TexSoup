@@ -18,6 +18,57 @@ Restrict the run to a subset of backends:
 python3 benchmarks/arxiv.py 2004.05565 --backends texsoup latexwalker plastex
 ```
 
+List locally verified named paper sets:
+
+```bash
+export ARXIV_BENCHMARK_ROOT=/path/to/arxiv-benchmark
+python3 benchmarks/arxiv.py --list-paper-sets
+python3 benchmarks/arxiv.py \
+  --paper-set redistributable-smoke-10 \
+  --source-dir "$ARXIV_BENCHMARK_ROOT/packages" \
+  --no-download \
+  --backends texsoup \
+  --texsoup-tolerance 1 \
+  --json-out "$ARXIV_BENCHMARK_ROOT/texsoup-benchmark-smoke10.json"
+```
+
+Use `redistributable-smoke-10` / `redistributable-stress-10` only as a fast
+smoke/regression set. It is not a coverage substitute for the external HF
+benchmark dataset.
+
+Run an external paper set without committing the IDs to this repository:
+
+```bash
+python3 benchmarks/arxiv.py \
+  --paper-set-file "$ARXIV_BENCHMARK_ROOT/local-manifest.tsv" \
+  --source-dir "$ARXIV_BENCHMARK_ROOT/packages" \
+  --no-download \
+  --backends texsoup
+```
+
+Run every source package in a local directory:
+
+```bash
+python3 benchmarks/arxiv.py \
+  --source-dir "$ARXIV_BENCHMARK_ROOT/packages" \
+  --no-download \
+  --backends texsoup
+```
+
+Filter any local or external sweep through the local arXiv metadata snapshot and
+license policy:
+
+```bash
+python3 benchmarks/arxiv.py \
+  --paper-set-file "$ARXIV_BENCHMARK_ROOT/local-manifest.tsv" \
+  --source-dir "$ARXIV_BENCHMARK_ROOT/packages" \
+  --no-download \
+  --license-snapshot "$ARXIV_BENCHMARK_ROOT/metadata/arxiv-metadata.jsonl" \
+  --license-policy /path/to/arxiv-license-policy.py \
+  --keep-licenses-only \
+  --backends texsoup
+```
+
 Run external converters without a timeout:
 
 ```bash
@@ -33,6 +84,28 @@ The script:
 - optionally inlines `.bbl` content
 - runs each backend on the same expanded source text
 
+The `texsoup` backend defaults to strict `tolerance=0`. Pass
+`--texsoup-tolerance 1` when benchmarking the tolerant parser mode used by the
+document converter.
+
+## Paper Sets and License Policy
+
+Committed named sets are restricted to papers verified as `KEEP` against a
+pinned arXiv metadata snapshot and the same fail-closed license policy used by
+the corpus converter. Missing, unknown, nonexclusive, NC, ND, or SA evidence is
+not benchmark-download authorization. The current repository-distributed set
+is the 10-paper smoke/stress set.
+
+Larger suites should not be committed as Python lists here. Build them as
+external benchmark datasets/artifacts, then supply them with `--paper-set-file`,
+`--source-dir`, or both. This keeps the repository as the harness plus small
+smoke coverage, while the full redistributable benchmark can evolve separately
+with its source packages and metadata.
+
+The old 57-paper local named set is intentionally sunset by the external
+benchmark dataset work. Keep any larger benchmark manifest alongside that
+dataset, not in this repository.
+
 ## Backends
 
 - `texsoup`: TexSoup itself
@@ -45,14 +118,16 @@ These are intentionally lumped together in one harness, but they are not doing
 the exact same job. `latexwalker` is a lightweight syntax walker, while
 `latexml` and `latex2html` are full document converters.
 
-## Results
+## Historical 50-Paper Snapshot
 
 ![TexSoup robustness and speed](summary.svg)
 
-This larger snapshot compares TexSoup, plasTeX, and LaTeXML on a 50-paper
-AI/ML arXiv set. The robustness panel breaks outcomes into successes,
-timeouts, and other failures, and the speed panel reports mean runtime on
-successful papers only.
+This snapshot predates the redistributable-only named sets and is kept as a
+historical comparison. Use the external benchmark dataset for current coverage
+once it is published.
+The chart compares TexSoup, plasTeX, and LaTeXML on a 50-paper AI/ML arXiv set.
+The robustness panel breaks outcomes into successes, timeouts, and other
+failures, and the speed panel reports mean runtime on successful papers only.
 
 The 50-paper chart uses a `10` second timeout for all tools, and the speed
 panel reports the mean of per-paper median runtimes on successful papers only.

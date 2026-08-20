@@ -7,12 +7,19 @@ tree with navigation, search, and modification utilities.
 from TexSoup.tex import read
 from TexSoup.data import TexNode
 from TexSoup.export import dump, dumps
+from TexSoup.frontmatter import (
+    FrontMatter,
+    FrontMatterSource,
+    extract_frontmatter,
+    standardize_frontmatter_source,
+)
+from TexSoup.tlatex import standardize_tlatex_source
 
 __version__ = '0.3.3'
 
 
 # noinspection PyPep8Naming
-def TexSoup(tex_code, skip_envs=(), tolerance=0):
+def TexSoup(tex_code, skip_envs=(), tolerance=0, expand_macros=False):
     r"""
     At a high-level, parses provided Tex into a navigable, searchable
     structure. This is accomplished in two steps:
@@ -23,6 +30,9 @@ def TexSoup(tex_code, skip_envs=(), tolerance=0):
     :param Union[str,iterable] tex_code: the Tex source
     :param Union[str] skip_envs: names of environments to skip parsing
     :param int tolerance: error tolerance level (only supports 0 or 1)
+    :param bool expand_macros: opt in to source standardization, including
+        simple user-macro expansion, before parsing. The default preserves
+        the caller's source for load/edit/save workflows.
     :return: :class:`TexSoup.data.TexNode` object representing tex document
 
     >>> from TexSoup import TexSoup
@@ -85,5 +95,10 @@ def TexSoup(tex_code, skip_envs=(), tolerance=0):
     >>> soup
     SOUP
     """
-    parsed, src = read(tex_code, skip_envs=skip_envs, tolerance=tolerance)
+    parsed, src = read(
+        tex_code,
+        skip_envs=skip_envs,
+        tolerance=tolerance,
+        expand=expand_macros,
+    )
     return TexNode(parsed, src=src)

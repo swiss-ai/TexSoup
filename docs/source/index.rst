@@ -28,6 +28,7 @@ navigate, search, and modify.
    categorizer
    tokenizer
    parser
+   parser_architecture
 
 .. toctree::
    :maxdepth: 1

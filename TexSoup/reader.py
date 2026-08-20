@@ -29,24 +29,31 @@ MATH_TOKEN_TO_ENV = {env.token_begin: env for env in MATH_SIMPLE_ENVS}
 ARG_BEGIN_TO_ENV = {arg.token_begin: arg for arg in arg_type}
 ARG_REQUIRED = 'required'
 ARG_OPTIONAL = 'optional'
-RAW_ARG_ENVS = {'array', 'tabular', 'tabular*'}
+RAW_ARG_ENVS = {
+    'array',
+    'tabular', 'tabular*',
+    'tblr', 'tblr*', 'talltblr', 'talltblr*', 'longtblr', 'longtblr*',
+}
 VERBATIM_COMMANDS = {'verb', 'verb*'}
 SPECIAL_COMMAND_SIGNATURE = (
     (ARG_REQUIRED, 1),
     (ARG_OPTIONAL, 2),
     (ARG_REQUIRED, 1),
 )
+PRIMITIVE_DEF_SIGNATURE = ((ARG_REQUIRED, 2),)
 SIGNATURES = {
-    'def': ((ARG_REQUIRED, 2),),
+    'def': PRIMITIVE_DEF_SIGNATURE,
     'textbf': ((ARG_REQUIRED, 1),),
     'section': ((ARG_OPTIONAL, 1), (ARG_REQUIRED, 1)),
-    'label': ((ARG_REQUIRED, 1),),
+    'label': ((ARG_OPTIONAL, -1), (ARG_REQUIRED, 1)),
     'cap': (),
     'cup': (),
     'in': (),
     'notin': (),
     'infty': (),
     'noindent': (),
+    'textbackslash': (),
+    'textunderscore': (),
     'newcommand': SPECIAL_COMMAND_SIGNATURE,
     'renewcommand': SPECIAL_COMMAND_SIGNATURE,
     'providecommand': SPECIAL_COMMAND_SIGNATURE,
@@ -55,6 +62,26 @@ SIGNATURE_MODES = {name: MODE_SPECIAL for name in SPECIAL_COMMANDS}
 
 
 __all__ = ['read_expr', 'read_tex']
+
+
+class RawArg(TexGroup):
+    r"""A raw argument fragment that stringifies without delimiters.
+
+    Primitive macro definitions have unbraced parameter text between the
+    control sequence being defined and the braced replacement body, such as
+    ``#1`` in ``\def\figref#1{...}``. ``TexArgs`` only includes ``TexGroup``
+    and ``TexCmd`` instances in its public argument list, so this lightweight
+    group preserves that parameter text without inventing braces on output.
+    """
+
+    begin = ''
+    end = ''
+    name = 'RawArg'
+
+    def __init__(self, *contents, preserve_whitespace=True, position=-1):
+        TexEnv.__init__(
+            self, self.name, self.begin, self.end, contents,
+            preserve_whitespace=preserve_whitespace, position=position)
 
 
 def read_tex(buf, skip_envs=(), tolerance=0):
@@ -110,6 +137,8 @@ def read_expr(src, skip_envs=(), tolerance=0, mode=MODE_NON_MATH):
     """
     c = next(src)
     if c.category in MATH_TOKEN_TO_ENV.keys():
+        if mode == MODE_MATH:
+            return TexText(c, position=c.position)
         expr = MATH_TOKEN_TO_ENV[c.category]([], position=c.position)
         return read_math_env(src, expr, tolerance=tolerance)
     elif c.category == TC.Escape:
@@ -190,7 +219,7 @@ def read_item(src, tolerance=0):
     while src.hasNext():
         if src.peek().category == TC.Escape:
             cmd_name, _ = make_read_peek(read_command)(
-                src, skip=1, tolerance=tolerance)
+                src, skip=1, arg_spec=(), tolerance=tolerance)
             if cmd_name in ('end', 'item'):
                 return extras
         elif src.peek().category == TC.GroupEnd:
@@ -391,14 +420,30 @@ def read_math_env(src, expr, tolerance=0):
         if expr.token_end == TC.MathSwitch \
                 and src.peek().category == TC.DisplayMathSwitch:
             split_display_math_switch(src)
-        if src.peek().category == expr.token_end:
+        if _math_env_closes_on(src.peek().category, expr.token_end, tolerance):
             break
         contents.append(read_expr(src, tolerance=tolerance, mode=MODE_MATH))
-    if not src.hasNext() or src.peek().category != expr.token_end:
+    if not src.hasNext() or not _math_env_closes_on(src.peek().category, expr.token_end, tolerance):
+        if tolerance > 0:
+            expr.append(*contents)
+            return expr
         unclosed_env_handler(src, expr, src.peek())
     next(src)
     expr.append(*contents)
     return expr
+
+
+def _math_env_closes_on(category, token_end, tolerance=0):
+    if category == token_end:
+        return True
+    if tolerance <= 0:
+        return False
+    return (
+        (token_end == TC.MathSwitch and category == TC.MathGroupEnd)
+        or (token_end == TC.MathGroupEnd and category == TC.MathSwitch)
+        or (token_end == TC.DisplayMathSwitch and category == TC.DisplayMathGroupEnd)
+        or (token_end == TC.DisplayMathGroupEnd and category == TC.DisplayMathSwitch)
+    )
 
 
 def read_skip_env(src, expr):
@@ -458,11 +503,14 @@ def read_env(src, expr, skip_envs=(), tolerance=0, mode=MODE_NON_MATH):
     TexNamedEnv('foobar', [' tingtang '], [])
     """
     contents = []
+    args = None
     while src.hasNext():
         if src.peek().category == TC.Escape:
-            name, args = make_read_peek(read_command)(
-                src, skip=1, tolerance=tolerance, mode=mode)
+            name, _ = make_read_peek(read_command)(
+                src, skip=1, arg_spec=(), tolerance=tolerance, mode=mode)
             if name == 'end':
+                _, args = make_read_peek(read_command)(
+                    src, skip=1, tolerance=tolerance, mode=mode)
                 break
         contents.append(read_expr(src, skip_envs=skip_envs, tolerance=tolerance, mode=mode))
     error = not src.hasNext() or not args or args[0].string != expr.name
@@ -708,7 +756,11 @@ def read_begin_env_args(buf, tolerance=0, mode=MODE_NON_MATH):
     if not args:
         return args
 
-    if str(args[0].string) in RAW_ARG_ENVS:
+    env_name = str(args[0].string)
+    if env_name in SKIP_ENV_NAMES:
+        return args
+
+    if env_name in RAW_ARG_ENVS:
         read_arg_optional(buf, args, 1, tolerance=tolerance, mode=mode)
         spacer = read_spacer(buf)
         raw_arg = read_raw_brace_arg(buf, tolerance=tolerance)
@@ -749,9 +801,185 @@ def read_raw_command_args(buf, tolerance=0, mode=MODE_NON_MATH):
     return args
 
 
+def read_raw_required_args(buf, n_required, tolerance=0):
+    args = TexArgs()
+    while n_required > 0:
+        spacer = read_spacer(buf)
+        raw_arg = read_raw_brace_arg(buf, tolerance=tolerance)
+        if raw_arg is None:
+            if spacer:
+                buf.backward(1)
+            break
+        if spacer:
+            args.append(spacer)
+        args.append(raw_arg)
+        n_required -= 1
+    return args
+
+
+def append_raw_brace_arg(buf, args, tolerance=0):
+    """Append the next brace-delimited argument without parsing its contents."""
+    spacer = read_spacer(buf)
+    raw_arg = read_raw_brace_arg(buf, tolerance=tolerance)
+    if raw_arg is None:
+        if spacer:
+            buf.backward(1)
+        return False
+    if spacer:
+        args.append(spacer)
+    args.append(raw_arg)
+    return True
+
+
+def read_single_raw_arg(buf, tolerance=0, mode=MODE_NON_MATH):
+    del mode
+    return read_raw_required_args(buf, 1, tolerance=tolerance)
+
+
+def read_named_style_args(buf, tolerance=0, mode=MODE_NON_MATH):
+    del mode
+    return read_raw_required_args(buf, 2, tolerance=tolerance)
+
+
+def read_mintinline_args(buf, tolerance=0, mode=MODE_NON_MATH):
+    r"""Read ``\mintinline`` options plus language/code args.
+
+    The code argument is verbatim-like; parsing it recursively lets literal
+    characters such as ``$`` open math spans that can swallow the rest of a
+    document.
+    """
+    args = TexArgs()
+    read_arg_optional(buf, args, 1, tolerance=tolerance, mode=mode)
+    append_raw_brace_arg(buf, args, tolerance=tolerance)
+    append_raw_brace_arg(buf, args, tolerance=tolerance)
+    return args
+
+
+MATH_CONTROL_SEQUENCE_TOKENS = {
+    TC.MathSwitch,
+    TC.DisplayMathSwitch,
+    TC.MathGroupBegin,
+    TC.MathGroupEnd,
+    TC.DisplayMathGroupBegin,
+    TC.DisplayMathGroupEnd,
+}
+
+
+def read_macro_target_arg(buf, args, tolerance=0, mode=MODE_NON_MATH):
+    r"""Read the control sequence being defined without parsing it as math."""
+    spacer = read_spacer(buf)
+    raw_arg = read_raw_brace_arg(buf, tolerance=tolerance)
+    if raw_arg is not None:
+        if spacer:
+            args.append(spacer)
+        args.append(raw_arg)
+        return
+    if spacer:
+        buf.backward(1)
+    read_arg_required(buf, args, 1, tolerance=tolerance, mode=mode)
+
+
+def read_latex_definition_args(buf, tolerance=0, mode=MODE_NON_MATH):
+    r"""Read LaTeX macro-definition arguments with a raw replacement body."""
+    args = TexArgs()
+    read_macro_target_arg(buf, args, tolerance=tolerance, mode=mode)
+    read_arg_optional(buf, args, 2, tolerance=tolerance, mode=mode)
+    append_raw_brace_arg(buf, args, tolerance=tolerance)
+    return args
+
+
+def read_math_operator_definition_args(buf, tolerance=0, mode=MODE_NON_MATH):
+    r"""Read ``\DeclareMathOperator`` arguments with a raw printed form."""
+    args = TexArgs()
+    read_macro_target_arg(buf, args, tolerance=tolerance, mode=mode)
+    append_raw_brace_arg(buf, args, tolerance=tolerance)
+    return args
+
+
+def read_environment_definition_args(buf, tolerance=0, mode=MODE_NON_MATH):
+    r"""Read ``\newenvironment``-style declarations with raw bodies."""
+    args = TexArgs()
+    read_macro_target_arg(buf, args, tolerance=tolerance, mode=mode)
+    read_arg_optional(buf, args, 2, tolerance=tolerance, mode=mode)
+    append_raw_brace_arg(buf, args, tolerance=tolerance)
+    append_raw_brace_arg(buf, args, tolerance=tolerance)
+    return args
+
+
+def read_document_environment_definition_args(buf, tolerance=0, mode=MODE_NON_MATH):
+    r"""Read xparse document-environment declarations with raw bodies."""
+    args = TexArgs()
+    read_macro_target_arg(buf, args, tolerance=tolerance, mode=mode)
+    append_raw_brace_arg(buf, args, tolerance=tolerance)
+    append_raw_brace_arg(buf, args, tolerance=tolerance)
+    append_raw_brace_arg(buf, args, tolerance=tolerance)
+    return args
+
+
+def read_primitive_definition_args(buf, tolerance=0, mode=MODE_NON_MATH):
+    r"""Read primitive ``\def``-style arguments with a raw replacement body."""
+    spacer = read_spacer(buf)
+    can_read_raw_definition = (
+        buf.hasNext()
+        and (buf.peek().category == TC.Escape
+             or buf.peek().category in MATH_CONTROL_SEQUENCE_TOKENS))
+    if spacer:
+        buf.backward(1)
+    if not can_read_raw_definition:
+        return read_args(
+            buf, arg_spec=PRIMITIVE_DEF_SIGNATURE, tolerance=tolerance,
+            mode=mode)
+
+    args = TexArgs()
+    if buf.peek().category in MATH_CONTROL_SEQUENCE_TOKENS:
+        token = next(buf)
+        args.append(RawArg(str(token), position=token.position))
+    else:
+        read_arg_required(buf, args, 1, tolerance=tolerance, mode=mode)
+
+    params = []
+    position = -1
+    while buf.hasNext() and buf.peek().category != TC.GroupBegin:
+        token = next(buf)
+        if position < 0:
+            position = token.position
+        params.append(str(token))
+    if params:
+        args.append(RawArg(''.join(params), position=position))
+
+    append_raw_brace_arg(buf, args, tolerance=tolerance)
+    return args
+
+
 SPECIAL_ARG_READERS = {
+    'author': read_single_raw_arg,
     'begin': read_begin_env_args,
+    'DeclareMathOperator': read_math_operator_definition_args,
+    'DeclareMathOperator*': read_math_operator_definition_args,
+    'DeclareDocumentEnvironment': read_document_environment_definition_args,
+    'def': read_primitive_definition_args,
+    'edef': read_primitive_definition_args,
+    'gdef': read_primitive_definition_args,
+    'lstdefinestyle': read_named_style_args,
+    'lstset': read_single_raw_arg,
+    'mdfdefinestyle': read_named_style_args,
+    'mintinline': read_mintinline_args,
+    'NewDocumentEnvironment': read_document_environment_definition_args,
+    'newenvironment': read_environment_definition_args,
+    'newenvironment*': read_environment_definition_args,
+    'newcommand': read_latex_definition_args,
+    'newcommand*': read_latex_definition_args,
+    'providecommand': read_latex_definition_args,
+    'providecommand*': read_latex_definition_args,
+    'provideenvironment': read_environment_definition_args,
+    'provideenvironment*': read_environment_definition_args,
+    'renewcommand': read_latex_definition_args,
+    'renewcommand*': read_latex_definition_args,
+    'RenewDocumentEnvironment': read_document_environment_definition_args,
+    'renewenvironment': read_environment_definition_args,
+    'renewenvironment*': read_environment_definition_args,
     'url': read_raw_command_args,
+    'xdef': read_primitive_definition_args,
 }
 
 
